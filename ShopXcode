@@ -1,0 +1,460 @@
+import tkinter as tk
+from tkinter import messagebox
+from functools import reduce
+
+# ---------- design tokens (dark theme only) ----------
+BG = "#0B0D12"
+SURFACE = "#12151C"
+CARD = "#181C26"
+BORDER = "#262C3A"
+FIELD = "#0F1218"
+TEXT = "#E8EAF0"
+MUTED = "#8A93A6"
+ACCENT = "#7C5CFF"
+ACCENT_HOVER = "#9279FF"
+SUCCESS = "#34D399"
+DANGER = "#F87171"
+FONT = "Segoe UI"
+
+# Each button style: (background, text colour, hover background)
+BUTTON_STYLES = {
+    "primary": (ACCENT, "#FFFFFF", ACCENT_HOVER),
+    "ghost": (CARD, TEXT, BORDER),
+    "nav": (SURFACE, MUTED, CARD),
+    "active": ("#221C44", TEXT, "#2B2456"),
+    "danger": ("#3A1F24", DANGER, "#4A2830"),
+}
+
+FREE_DELIVERY_ABOVE = 999
+STANDARD_DELIVERY = 49
+EXPRESS_EXTRA = 99
+USERS = {"admin": "shopx123"}
+
+PRODUCTS = [
+    {"id": 1, "name": "Wireless Headphones", "category": "Electronics", "price": 1499},
+    {"id": 2, "name": "Smart Watch", "category": "Electronics", "price": 2999},
+    {"id": 3, "name": "Bluetooth Speaker", "category": "Electronics", "price": 1299},
+    {"id": 4, "name": "Cotton T-Shirt", "category": "Fashion", "price": 499},
+    {"id": 5, "name": "Denim Jacket", "category": "Fashion", "price": 1799},
+    {"id": 6, "name": "Running Shoes", "category": "Fashion", "price": 2199},
+    {"id": 7, "name": "Coffee Mug", "category": "Home", "price": 249},
+    {"id": 8, "name": "Desk Lamp", "category": "Home", "price": 899},
+    {"id": 9, "name": "Notebook Set", "category": "Home", "price": 349},
+]
+
+CATEGORIES = sorted(set(map(lambda p: p["category"], PRODUCTS)))
+
+SORT_KEYS = {
+    "Name": lambda p: p["name"],
+    "Price: Low to High": lambda p: p["price"],
+    "Price: High to Low": lambda p: -p["price"],
+}
+
+
+class ShopX:
+    def __init__(self, root):
+        self.root = root
+        self.user = None
+        self.screen = "dashboard"
+        self.sidebar_open = True
+        self.notice = ""
+        self.users = dict(USERS)
+        self.cart = {}                      # product id -> quantity
+        self.orders = []                    # placed orders, each a dict
+
+        self.category = tk.StringVar(value="All")
+        self.search = tk.StringVar()
+        self.max_price = tk.IntVar(value=3000)
+        self.sort_by = tk.StringVar(value="Name")
+        self.delivery = tk.IntVar(value=0)
+        self.payment = tk.StringVar(value="Card")
+        self.ship_name = tk.StringVar()
+        self.ship_address = tk.StringVar()
+        self.ship_phone = tk.StringVar()
+
+        root.title("ShopX")
+        root.geometry("1040x660")
+        root.minsize(900, 600)
+        root.configure(bg=BG)
+        self.render()
+
+    # ---------- navigation and rendering ----------
+    def go(self, screen):
+        self.screen = screen
+        self.render()
+
+    def toggle_sidebar(self):
+        self.sidebar_open = not self.sidebar_open
+        self.render()
+
+    def notify(self, text):
+        self.notice = text
+
+    def render(self):
+        """Rebuild the window for the current screen. Tk variables keep their values."""
+        for widget in self.root.winfo_children():
+            widget.destroy()
+
+        if self.user is None:
+            self.build_login(self.root)
+            return
+
+        self.build_topbar()
+        body = tk.Frame(self.root, bg=BG)
+        body.pack(fill="both", expand=True)
+        if self.sidebar_open:
+            self.build_sidebar(body)
+
+        content = tk.Frame(body, bg=BG, padx=24, pady=18)
+        content.pack(side="left", fill="both", expand=True)
+        if self.notice:
+            self.label(content, self.notice, color=SUCCESS).pack(anchor="w", pady=(0, 12))
+            self.notice = ""
+
+        screens = {
+            "dashboard": self.build_dashboard,
+            "products": self.build_products,
+            "billing": self.build_billing,
+        }
+        screens[self.screen](content)
+
+    # ---------- widget helpers ----------
+    def label(self, parent, text, size=11, bold=False, muted=False, color=None):
+        fg = color or (MUTED if muted else TEXT)
+        return tk.Label(parent, text=text, bg=parent["bg"], fg=fg,
+                        font=(FONT, size, "bold" if bold else "normal"))
+
+    def frame(self, parent, card=False):
+        return tk.Frame(parent, bg=CARD if card else parent["bg"])
+
+    def button(self, parent, text, command, kind="primary", anchor="center"):
+        bg, fg, hover = BUTTON_STYLES[kind]
+        btn = tk.Button(parent, text=text, command=command, bg=bg, fg=fg,
+                        activebackground=hover, activeforeground=fg, relief="flat", bd=0,
+                        padx=14, pady=7, anchor=anchor, cursor="hand2",
+                        font=(FONT, 10, "bold"))
+        btn.bind("<Enter>", lambda e: btn.config(bg=hover))     # hover effect
+        btn.bind("<Leave>", lambda e: btn.config(bg=bg))
+        return btn
+
+    def entry(self, parent, **options):
+        return tk.Entry(parent, bg=FIELD, fg=TEXT, insertbackground=TEXT, relief="flat", bd=0,
+                        font=(FONT, 11), highlightthickness=1, highlightbackground=BORDER,
+                        highlightcolor=ACCENT, **options)
+
+    def radio(self, parent, text, variable, value, command=None):
+        return tk.Radiobutton(parent, text=text, variable=variable, value=value, command=command,
+                              bg=parent["bg"], fg=TEXT, selectcolor=FIELD, activebackground=parent["bg"],
+                              activeforeground=TEXT, font=(FONT, 10), bd=0, highlightthickness=0)
+
+    # ---------- top bar and sidebar (the common UI) ----------
+    def build_topbar(self):
+        bar = tk.Frame(self.root, bg=SURFACE)
+        bar.pack(fill="x")
+        self.button(bar, "\u2261", self.toggle_sidebar, kind="ghost").pack(side="left", padx=14, pady=10)
+        titles = {"dashboard": "Dashboard", "products": "Products", "billing": "Billing"}
+        self.label(bar, titles[self.screen], size=14, bold=True).pack(side="left")
+        self.button(bar, f"Cart ({self.total_items()})", lambda: self.go("billing"),
+                    kind="ghost").pack(side="right", padx=14, pady=10)
+
+    def build_sidebar(self, body):
+        side = tk.Frame(body, bg=SURFACE, width=200)
+        side.pack_propagate(False)
+        side.pack(side="left", fill="y")
+
+        # Pack the bottom block first so it always stays visible
+        bottom = tk.Frame(side, bg=SURFACE)
+        bottom.pack(side="bottom", fill="x", padx=16, pady=16)
+        self.label(bottom, "Signed in as", size=9, muted=True).pack(anchor="w")
+        self.label(bottom, self.user, bold=True).pack(anchor="w", pady=(0, 8))
+        self.button(bottom, "Sign out", self.sign_out, kind="ghost").pack(fill="x")
+
+        self.label(side, "ShopX", size=20, bold=True, color=ACCENT).pack(anchor="w", padx=20, pady=(22, 18))
+        for text, screen in [("Dashboard", "dashboard"), ("Products", "products"), ("Billing", "billing")]:
+            kind = "active" if screen == self.screen else "nav"
+            self.button(side, text, lambda s=screen: self.go(s), kind=kind,
+                        anchor="w").pack(fill="x", padx=12, pady=2)
+
+    # ---------- login ----------
+    def build_login(self, parent):
+        card = tk.Frame(parent, bg=CARD, padx=40, pady=34)
+        card.place(relx=0.5, rely=0.5, anchor="center")          # place() geometry
+
+        tk.Label(card, text="ShopX", font=(FONT, 28, "bold"), bg=CARD, fg=ACCENT).pack(anchor="w")
+        self.label(card, "Sign in to continue", muted=True).pack(anchor="w", pady=(0, 22))
+
+        self.label(card, "Username", size=9, muted=True).pack(anchor="w")
+        self.login_user = self.entry(card, width=32)
+        self.login_user.pack(fill="x", ipady=7, pady=(4, 12))
+
+        self.label(card, "Password", size=9, muted=True).pack(anchor="w")
+        self.login_pass = self.entry(card, width=32, show="*")
+        self.login_pass.pack(fill="x", ipady=7, pady=(4, 0))
+        self.login_pass.bind("<Return>", lambda e: self.sign_in())   # event binding
+
+        self.login_msg = self.label(card, "", size=9, color=DANGER)
+        self.login_msg.pack(anchor="w", pady=(10, 4))
+        self.button(card, "Sign in", self.sign_in).pack(fill="x")
+        self.button(card, "Create account", self.create_account, kind="ghost").pack(fill="x", pady=(8, 0))
+        self.label(card, "Demo login: admin / shopx123", size=9, muted=True).pack(pady=(18, 0))
+
+    def sign_in(self):
+        username = self.login_user.get().strip()
+        if username and self.users.get(username) == self.login_pass.get():
+            self.log_in(username)
+        else:
+            self.login_msg.config(text="Incorrect username or password.")
+
+    def create_account(self):
+        username = self.login_user.get().strip()
+        password = self.login_pass.get()
+        if not username or not password:
+            self.login_msg.config(text="Enter a username and password.")
+        elif username in self.users:
+            self.login_msg.config(text="That username is taken.")
+        else:
+            self.users[username] = password
+            self.log_in(username)
+
+    def log_in(self, username):
+        self.user = username
+        self.notify(f"Welcome, {username}")
+        self.go("dashboard")
+
+    def sign_out(self):
+        self.user = None
+        self.cart.clear()
+        self.go("dashboard")
+
+    # ---------- dashboard ----------
+    def build_dashboard(self, parent):
+        self.label(parent, f"Welcome back, {self.user}", size=18, bold=True).pack(anchor="w")
+        self.label(parent, "Here is how your store is doing.", muted=True).pack(anchor="w", pady=(0, 16))
+
+        revenue = reduce(lambda acc, o: acc + o["total"], self.orders, 0)
+        items_sold = reduce(lambda acc, o: acc + o["items"], self.orders, 0)
+        stats = [("Revenue (Rs.)", f"{revenue:,}"), ("Orders", len(self.orders)),
+                 ("Items sold", items_sold), ("In cart", self.total_items())]
+
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill="x")
+        for i, (title, value) in enumerate(stats):
+            row.columnconfigure(i, weight=1)
+            card = self.frame(row, card=True)
+            card.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 10, 0))
+            self.label(card, title, size=9, muted=True).pack(anchor="w", padx=16, pady=(14, 0))
+            self.label(card, str(value), size=20, bold=True).pack(anchor="w", padx=16, pady=(2, 14))
+
+        middle = tk.Frame(parent, bg=BG)
+        middle.pack(fill="both", expand=True, pady=16)
+
+        chart_card = self.frame(middle, card=True)
+        chart_card.pack(side="left", fill="both", expand=True)
+        self.label(chart_card, "Revenue by category", bold=True).pack(anchor="w", padx=16, pady=(14, 6))
+        canvas = tk.Canvas(chart_card, bg=CARD, highlightthickness=0, width=380, height=220)
+        canvas.pack(padx=16, pady=(0, 14))
+        self.draw_chart(canvas)
+
+        orders_card = self.frame(middle, card=True)
+        orders_card.pack(side="left", fill="both", expand=True, padx=(16, 0))
+        self.label(orders_card, "Recent orders", bold=True).pack(anchor="w", padx=16, pady=(14, 6))
+        listbox = tk.Listbox(orders_card, bg=FIELD, fg=TEXT, selectbackground=ACCENT, bd=0,
+                             highlightthickness=0, activestyle="none", font=(FONT, 10))
+        listbox.pack(fill="both", expand=True, padx=16, pady=(0, 14))
+        if self.orders:
+            lines = map(lambda o: f"{o['id']}   {o['items']} items   Rs. {o['total']}   {o['payment']}",
+                        reversed(self.orders))
+            for line in lines:
+                listbox.insert("end", line)
+        else:
+            listbox.insert("end", "No orders yet. Browse products to get started.")
+
+        self.button(parent, "Browse products", lambda: self.go("products")).pack(anchor="w")
+
+    def draw_chart(self, canvas):
+        lines = reduce(lambda acc, o: acc + o["lines"], self.orders, [])
+        totals = {cat: reduce(lambda acc, line: acc + line[0]["price"] * line[1],
+                              filter(lambda line: line[0]["category"] == cat, lines), 0)
+                  for cat in CATEGORIES}
+        peak = max(totals.values()) or 1
+        for i, (cat, value) in enumerate(totals.items()):
+            x = 40 + i * 110
+            height = int(value / peak * 150)
+            canvas.create_rectangle(x, 190 - height, x + 60, 190, fill=ACCENT, outline="")
+            canvas.create_text(x + 30, 180 - height, text=f"{value:,}", fill=TEXT, font=(FONT, 9))
+            canvas.create_text(x + 30, 206, text=cat, fill=MUTED, font=(FONT, 9))
+        if not lines:
+            canvas.create_text(190, 100, text="No sales yet", fill=MUTED, font=(FONT, 11))
+
+    # ---------- product list ----------
+    def build_products(self, parent):
+        bar = self.frame(parent)
+        bar.pack(fill="x")
+        search = self.entry(bar, textvariable=self.search, width=30)
+        search.pack(side="left", ipady=6)
+        search.bind("<KeyRelease>", lambda e: self.refresh_products())   # event binding
+
+        menubutton = tk.Menubutton(bar, text="Sort options", bg=CARD, fg=TEXT, relief="flat",
+                                   activebackground=BORDER, activeforeground=TEXT, padx=12, pady=6)
+        menubutton.pack(side="left", padx=12)
+        menu = tk.Menu(menubutton, tearoff=0, bg=CARD, fg=TEXT)
+        for option in SORT_KEYS:
+            menu.add_radiobutton(label=option, variable=self.sort_by, value=option,
+                                 command=self.refresh_products)
+        menubutton["menu"] = menu
+
+        filters = self.frame(parent)
+        filters.pack(fill="x", pady=12)
+        for name in ["All"] + CATEGORIES:
+            self.radio(filters, name, self.category, name, self.refresh_products).pack(side="left", padx=(0, 14))
+        self.label(filters, "Max Rs.", size=9, muted=True).pack(side="left", padx=(12, 6))
+        tk.Scale(filters, from_=0, to=3000, orient="horizontal", variable=self.max_price, length=160,
+                 command=lambda value: self.refresh_products(), bg=BG, fg=TEXT, troughcolor=FIELD,
+                 activebackground=ACCENT, highlightthickness=0, bd=0).pack(side="left")
+
+        self.grid_frame = self.frame(parent)
+        self.grid_frame.pack(fill="both", expand=True)
+        for column in range(3):
+            self.grid_frame.columnconfigure(column, weight=1)
+        self.refresh_products()
+
+    def refresh_products(self):
+        for widget in self.grid_frame.winfo_children():
+            widget.destroy()
+        for index, product in enumerate(self.visible_products()):
+            self.make_card(product).grid(row=index // 3, column=index % 3, sticky="nsew", padx=6, pady=6)
+        if not self.visible_products():
+            self.label(self.grid_frame, "No products match your filters.", muted=True).grid(row=0, column=0, pady=30)
+
+    def make_card(self, product):
+        card = self.frame(self.grid_frame, card=True)
+        self.label(card, product["category"], size=9, muted=True).pack(anchor="w", padx=16, pady=(14, 0))
+        self.label(card, product["name"], size=13, bold=True).pack(anchor="w", padx=16, pady=(4, 0))
+        self.label(card, f"Rs. {product['price']:,}", size=14, bold=True,
+                   color=ACCENT).pack(anchor="w", padx=16, pady=(6, 12))
+        self.button(card, "Add to cart", lambda p=product: self.add_to_cart(p)).pack(anchor="w", padx=16, pady=(0, 14))
+        return card
+
+    def visible_products(self):
+        query = self.search.get().strip().lower()
+        category = self.category.get()
+        limit = self.max_price.get()
+        matches = lambda p: (query in p["name"].lower()
+                             and (category == "All" or p["category"] == category)
+                             and p["price"] <= limit)
+        return sorted(filter(matches, PRODUCTS), key=SORT_KEYS[self.sort_by.get()])
+
+    def add_to_cart(self, product):
+        self.cart[product["id"]] = self.cart.get(product["id"], 0) + 1
+        self.notify(f"Added {product['name']} to cart")
+        self.render()
+
+    # ---------- billing ----------
+    def cart_lines(self):
+        return [(p, self.cart[p["id"]]) for p in PRODUCTS if p["id"] in self.cart]
+
+    def total_items(self):
+        return reduce(lambda acc, q: acc + q, self.cart.values(), 0)
+
+    def breakdown(self):
+        subtotal = reduce(lambda acc, line: acc + line[0]["price"] * line[1], self.cart_lines(), 0)
+        delivery = 0 if subtotal >= FREE_DELIVERY_ABOVE else STANDARD_DELIVERY
+        if self.delivery.get() == 1:
+            delivery += EXPRESS_EXTRA
+        return subtotal, delivery, subtotal + delivery
+
+    def set_qty(self, pid, value):
+        if value.isdigit():
+            self.cart[pid] = max(1, min(10, int(value)))
+            self.render()
+
+    def remove(self, pid):
+        self.cart.pop(pid, None)
+        self.notify("Item removed from cart")
+        self.render()
+
+    def build_billing(self, parent):
+        if not self.cart:
+            self.label(parent, "Your cart is empty.", muted=True).pack(anchor="w")
+            self.button(parent, "Browse products", lambda: self.go("products")).pack(anchor="w", pady=10)
+            return
+
+        cols = tk.Frame(parent, bg=BG)
+        cols.pack(fill="both", expand=True)
+
+        left = tk.Frame(cols, bg=BG)
+        left.pack(side="left", fill="both", expand=True)
+        self.label(left, "Cart", size=12, bold=True).pack(anchor="w", pady=(0, 8))
+        for product, qty in self.cart_lines():
+            row = self.frame(left, card=True)
+            row.pack(fill="x", pady=4)
+            self.label(row, product["name"], bold=True).pack(side="left", padx=16, pady=12)
+            qty_var = tk.StringVar(value=str(qty))
+            tk.Spinbox(row, from_=1, to=10, width=4, textvariable=qty_var, bg=FIELD, fg=TEXT,
+                       insertbackground=TEXT, relief="flat", bd=0, buttonbackground=CARD,
+                       command=lambda pid=product["id"], v=qty_var: self.set_qty(pid, v.get())
+                       ).pack(side="left", padx=8, ipady=4)
+            self.label(row, f"Rs. {product['price'] * qty:,}", color=MUTED).pack(side="left", padx=8)
+            self.button(row, "Remove", lambda pid=product["id"]: self.remove(pid),
+                        kind="danger").pack(side="right", padx=16)
+
+        self.label(left, "Shipping details", size=12, bold=True).pack(anchor="w", pady=(18, 8))
+        for text, var in [("Full name", self.ship_name), ("Address", self.ship_address),
+                          ("Phone (10 digits)", self.ship_phone)]:
+            self.label(left, text, size=9, muted=True).pack(anchor="w", pady=(6, 2))
+            self.entry(left, textvariable=var).pack(fill="x", ipady=6)
+
+        right = self.frame(cols, card=True)
+        right.pack(side="left", fill="y", padx=(24, 0))
+        self.label(right, "Order summary", size=12, bold=True).pack(anchor="w", padx=18, pady=(14, 8))
+        self.summary = tk.Label(right, bg=CARD, fg=TEXT, justify="left", font=(FONT, 10))
+        self.summary.pack(anchor="w", padx=18)
+
+        self.label(right, "Delivery", size=9, muted=True).pack(anchor="w", padx=18, pady=(14, 2))
+        for text, value in [("Standard", 0), (f"Express (+Rs. {EXPRESS_EXTRA})", 1)]:
+            self.radio(right, text, self.delivery, value, self.refresh_summary).pack(anchor="w", padx=18)
+
+        self.label(right, "Payment", size=9, muted=True).pack(anchor="w", padx=18, pady=(12, 2))
+        for option in ["Card", "UPI", "Cash on delivery"]:
+            self.radio(right, option, self.payment, option).pack(anchor="w", padx=18)
+
+        self.button(right, "Place order", self.place_order).pack(fill="x", padx=18, pady=(18, 14))
+        self.refresh_summary()
+
+    def refresh_summary(self):
+        subtotal, delivery, total = self.breakdown()
+        self.summary.config(text=(f"Items: {self.total_items()}\n"
+                                  f"Subtotal: Rs. {subtotal:,}\n"
+                                  f"Delivery: Rs. {delivery}\n\n"
+                                  f"Total: Rs. {total:,}"))
+
+    def place_order(self):
+        if not self.cart:
+            messagebox.showwarning("Empty cart", "Add something to your cart first.")
+            return
+        name = self.ship_name.get().strip()
+        address = self.ship_address.get().strip()
+        phone = self.ship_phone.get().strip()
+        if not (name and address and phone):
+            messagebox.showerror("Missing details", "Please fill in all shipping fields.")
+            return
+        if not (phone.isdigit() and len(phone) == 10):
+            messagebox.showerror("Invalid phone", "Phone number must be exactly 10 digits.")
+            return
+
+        total = self.breakdown()[2]
+        order = {"id": f"SX{len(self.orders) + 1:04d}", "lines": self.cart_lines(),
+                 "items": self.total_items(), "total": total, "payment": self.payment.get()}
+        self.orders.append(order)
+        self.cart.clear()
+        self.ship_name.set("")
+        self.ship_address.set("")
+        self.ship_phone.set("")
+        self.notify(f"Order {order['id']} placed for Rs. {total:,}")
+        self.go("dashboard")
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    ShopX(root)
+    root.mainloop()
